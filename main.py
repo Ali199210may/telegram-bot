@@ -773,7 +773,7 @@ if __name__ == '__main__':
 
     t.start()
 
-    print("BOT ISHLADI")
+print("BOT ISHLADI")
 
     from flask import Flask
 from threading import Thread
@@ -787,8 +787,8 @@ def home():
 def run_web():
     app.run(host="0.0.0.0", port=10000)
 
-Thread(target=run_web).start()
-    bot.infinity_polling()
+Thread(target=run_web).start() 
+bot.infinity_polling()
 
 
 # ===== TAVARNI TAHRIRLASH =====
