@@ -1,142 +1,112 @@
 import os
 import sqlite3
-import logging
-from datetime import datetime, timedelta
-from io import BytesIO
-import threading
-import time
-
-from PIL import Image, ImageDraw, ImageFont
+from datetime import datetime
 import telebot
 from telebot import types
 
-# ========== SOZLAMALAR ==========
-
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "TOKENINGIZ")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s'
-)
+DB = "cafe.db"
 
-# ========== DATABASE ==========
-
-DB_PATH = 'cafe_debts.db'
+# ================= DATABASE =================
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
 
-    # USERS
-    c.execute('''
+    c.execute("""
     CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
-        full_name TEXT,
-        username TEXT,
-        role TEXT DEFAULT 'worker',
-        added_at TEXT,
-        added_by INTEGER
+        full_name TEXT
     )
-    ''')
+    """)
 
-    # PRODUCTS
-    c.execute('''
+    c.execute("""
     CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        supplier_name TEXT,
-        total_price REAL NOT NULL,
+        name TEXT,
+        total_price REAL,
         paid_amount REAL DEFAULT 0,
-        due_date TEXT,
+        click_number TEXT,
         photo_file_id TEXT,
-        note TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        created_by INTEGER
+        created_at TEXT
     )
-    ''')
+    """)
 
-    # PAYMENTS
-    c.execute('''
+    c.execute("""
     CREATE TABLE IF NOT EXISTS payments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        payment_type TEXT DEFAULT 'cash',
+        product_id INTEGER,
+        amount REAL,
         receipt_file_id TEXT,
-        note TEXT,
-        paid_at TEXT NOT NULL,
-        added_by INTEGER
+        paid_at TEXT
     )
-    ''')
+    """)
 
     conn.commit()
     conn.close()
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     return conn
 
-# ========== ADMIN ==========
+# ================= STATES =================
 
-def get_admins():
+states = {}
+
+def set_state(uid, state, data=None):
+    states[uid] = {
+        "state": state,
+        "data": data or {}
+    }
+
+def get_state(uid):
+    return states.get(uid, {
+        "state": None,
+        "data": {}
+    })
+
+def clear_state(uid):
+    states.pop(uid, None)
+
+# ================= MENU =================
+
+def menu():
+
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    m.add("➕ Tovar qo'shish")
+    m.add("📦 Tovarlar")
+    m.add("💸 To'lov qilish")
+    m.add("👤 Odam qo'shish")
+
+    return m
+
+# ================= START =================
+
+@bot.message_handler(commands=['start'])
+def start(msg):
+
+    uid = msg.from_user.id
+
     db = get_db()
 
-    rows = db.execute(
-        "SELECT user_id FROM users WHERE role='admin'"
-    ).fetchall()
-
-    db.close()
-
-    return [r['user_id'] for r in rows]
-
-def is_admin(user_id):
-    db = get_db()
-
-    row = db.execute(
-        "SELECT role FROM users WHERE user_id=?",
-        (user_id,)
+    user = db.execute(
+        "SELECT * FROM users WHERE user_id=?",
+        (uid,)
     ).fetchone()
 
-    db.close()
+    if not user:
 
-    return row and row['role'] == 'admin'
-
-def is_allowed(user_id):
-    db = get_db()
-
-    row = db.execute(
-        "SELECT user_id FROM users WHERE user_id=?",
-        (user_id,)
-    ).fetchone()
-
-    db.close()
-
-    return row is not None
-
-def register_admin(user_id, full_name, username):
-    db = get_db()
-
-    existing = db.execute(
-        "SELECT user_id FROM users WHERE user_id=?",
-        (user_id,)
-    ).fetchone()
-
-    if not existing:
         db.execute(
-            """
-            INSERT INTO users
-            (user_id, full_name, username, role, added_at)
-            VALUES (?, ?, ?, 'admin', ?)
-            """,
+            "INSERT INTO users VALUES (?, ?)",
             (
-                user_id,
-                full_name,
-                username or '',
-                datetime.now().isoformat()
+                uid,
+                msg.from_user.first_name
             )
         )
 
@@ -144,218 +114,309 @@ def register_admin(user_id, full_name, username):
 
     db.close()
 
-# ========== USER STATE ==========
-
-user_states = {}
-
-def set_state(uid, state, data=None):
-    user_states[uid] = {
-        'state': state,
-        'data': data or {}
-    }
-
-def get_state(uid):
-    return user_states.get(
-        uid,
-        {
-            'state': None,
-            'data': {}
-        }
-    )
-
-def clear_state(uid):
-    user_states.pop(uid, None)
-
-# ========== MENU ==========
-
-def admin_menu():
-    m = types.ReplyKeyboardMarkup(
-        resize_keyboard=True,
-        row_width=2
-    )
-
-    m.add(
-        types.KeyboardButton("➕ Yangi tovar"),
-        types.KeyboardButton("📦 Tovarlar")
-    )
-
-    m.add(
-        types.KeyboardButton("💸 To'lov kiritish"),
-        types.KeyboardButton("📊 Umumiy holat")
-    )
-
-    return m
-
-def get_menu(uid):
-    return admin_menu()
-
-def cancel_kb():
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-
-    m.add(
-        types.KeyboardButton("❌ Bekor qilish")
-    )
-
-    return m
-
-# ========== START ==========
-
-@bot.message_handler(commands=['start'])
-def cmd_start(msg):
-
-    uid = msg.from_user.id
-    name = msg.from_user.first_name
-    uname = msg.from_user.username or ''
-
-    admins = get_admins()
-
-    if not admins:
-        register_admin(uid, name, uname)
-
-        bot.send_message(
-            uid,
-            f"👑 Assalomu alaykum, {name}\n\n"
-            f"Siz admin bo'ldingiz.",
-            reply_markup=admin_menu()
-        )
-
-    elif not is_allowed(uid):
-
-        bot.send_message(
-            uid,
-            "🔒 Sizga ruxsat yo'q."
-        )
-
-    else:
-
-        bot.send_message(
-            uid,
-            f"👋 Xush kelibsiz, {name}",
-            reply_markup=get_menu(uid)
-        )
-
-# ========== TOVAR QO'SHISH ==========
-
-@bot.message_handler(func=lambda m: m.text == "➕ Yangi tovar")
-def add_product(msg):
-
-    uid = msg.from_user.id
-
-    if not is_admin(uid):
-        return
-
-    set_state(uid, 'prod_name')
-
     bot.send_message(
         uid,
-        "📦 Tovar nomini yuboring:",
-        reply_markup=cancel_kb()
+        "☕ Kafe botiga xush kelibsiz",
+        reply_markup=menu()
     )
 
-@bot.message_handler(func=lambda m: m.text == "📦 Tovarlar")
-def show_products(msg):
+# ================= ODAM QO'SHISH =================
 
-    uid = msg.from_user.id
+@bot.message_handler(func=lambda m: m.text == "👤 Odam qo'shish")
+def add_user(msg):
+
+    bot.send_message(
+        msg.chat.id,
+        "👤 Telegram ID yuboring:"
+    )
+
+    set_state(msg.chat.id, "add_user")
+
+# ================= TOVAR QO'SHISH =================
+
+@bot.message_handler(func=lambda m: m.text == "➕ Tovar qo'shish")
+def add_product(msg):
+
+    set_state(msg.chat.id, "product_name")
+
+    bot.send_message(
+        msg.chat.id,
+        "📦 Tovar nomini yuboring:"
+    )
+
+# ================= TOVARLAR =================
+
+@bot.message_handler(func=lambda m: m.text == "📦 Tovarlar")
+def products(msg):
 
     db = get_db()
 
     rows = db.execute(
-        """
-        SELECT id, name, total_price, paid_amount
-        FROM products
-        ORDER BY id DESC
-        """
+        "SELECT * FROM products ORDER BY id DESC"
     ).fetchall()
 
     db.close()
 
     if not rows:
-        bot.send_message(uid, "📭 Tovar yo'q")
+
+        bot.send_message(msg.chat.id, "📭 Tovar yo'q")
         return
 
-    text = "📦 Tovarlar:\n\n"
+    markup = types.InlineKeyboardMarkup()
 
     for r in rows:
 
         remain = r['total_price'] - r['paid_amount']
 
-        text += (
-            f"📌 {r['name']}\n"
-            f"💰 {r['total_price']:,.0f} so'm\n"
-            f"🔴 Qarz: {remain:,.0f} so'm\n\n"
+        markup.add(
+            types.InlineKeyboardButton(
+                f"{r['name']} | {remain:,.0f} so'm",
+                callback_data=f"view_{r['id']}"
+            )
         )
 
-    bot.send_message(uid, text)
+    bot.send_message(
+        msg.chat.id,
+        "📦 Tovarni tanlang:",
+        reply_markup=markup
+    )
 
-@bot.message_handler(func=lambda m: m.text == "💸 To'lov kiritish")
-def pay_start(msg):
+# ================= TO'LOV =================
 
-    uid = msg.from_user.id
-
-    if not is_admin(uid):
-        return
+@bot.message_handler(func=lambda m: m.text == "💸 To'lov qilish")
+def payment(msg):
 
     db = get_db()
 
     rows = db.execute(
-        "SELECT id, name FROM products"
+        "SELECT * FROM products"
     ).fetchall()
 
     db.close()
 
-    if not rows:
-        bot.send_message(uid, "📭 Tovar yo'q")
-        return
-
-    text = "ID ni yuboring:\n\n"
+    markup = types.InlineKeyboardMarkup()
 
     for r in rows:
-        text += f"{r['id']} - {r['name']}\n"
 
-    set_state(uid, 'pay_product')
+        markup.add(
+            types.InlineKeyboardButton(
+                r['name'],
+                callback_data=f"pay_{r['id']}"
+            )
+        )
 
-    bot.send_message(uid, text)
+    bot.send_message(
+        msg.chat.id,
+        "💸 Tovarni tanlang:",
+        reply_markup=markup
+    )
 
-# ========== TEXT HANDLER ==========
+# ================= VIEW PRODUCT =================
 
-@bot.message_handler(content_types=['text'])
-def handle_text(msg):
+@bot.callback_query_handler(func=lambda c: c.data.startswith("view_"))
+def view_product(call):
 
-    uid = msg.from_user.id
+    pid = int(call.data.split("_")[1])
+
+    db = get_db()
+
+    prod = db.execute(
+        "SELECT * FROM products WHERE id=?",
+        (pid,)
+    ).fetchone()
+
+    db.close()
+
+    remain = prod['total_price'] - prod['paid_amount']
+
+    text = (
+        f"📦 {prod['name']}\n\n"
+        f"💰 Jami: {prod['total_price']:,.0f} so'm\n"
+        f"✅ To'langan: {prod['paid_amount']:,.0f} so'm\n"
+        f"🔴 Qarz: {remain:,.0f} so'm\n\n"
+        f"💳 Klik:\n"
+        f"{prod['click_number']}\n\n"
+        f"🕒 {prod['created_at']}"
+    )
+
+    markup = types.InlineKeyboardMarkup()
+
+    markup.add(
+        types.InlineKeyboardButton(
+            "🧾 Cheklar",
+            callback_data=f"checks_{pid}"
+        )
+    )
+
+    if prod['photo_file_id']:
+
+        bot.send_photo(
+            call.message.chat.id,
+            prod['photo_file_id'],
+            caption=text,
+            reply_markup=markup
+        )
+
+    else:
+
+        bot.send_message(
+            call.message.chat.id,
+            text,
+            reply_markup=markup
+        )
+
+# ================= CHEKLAR =================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("checks_"))
+def checks(call):
+
+    pid = int(call.data.split("_")[1])
+
+    db = get_db()
+
+    payments = db.execute(
+        """
+        SELECT *
+        FROM payments
+        WHERE product_id=?
+        ORDER BY id DESC
+        """,
+        (pid,)
+    ).fetchall()
+
+    db.close()
+
+    if not payments:
+
+        bot.send_message(
+            call.message.chat.id,
+            "🧾 Chek yo'q"
+        )
+
+        return
+
+    for p in payments:
+
+        text = (
+            f"💸 {p['amount']:,.0f} so'm\n\n"
+            f"🕒 {p['paid_at']}"
+        )
+
+        if p['receipt_file_id']:
+
+            bot.send_photo(
+                call.message.chat.id,
+                p['receipt_file_id'],
+                caption=text
+            )
+
+        else:
+
+            bot.send_message(
+                call.message.chat.id,
+                text
+            )
+
+# ================= PAY SELECT =================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
+def pay_select(call):
+
+    pid = int(call.data.split("_")[1])
+
+    set_state(
+        call.message.chat.id,
+        "pay_amount",
+        {
+            "product_id": pid
+        }
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        "💸 Summani yuboring:"
+    )
+
+# ================= TEXT HANDLER =================
+
+@bot.message_handler(content_types=['text', 'photo'])
+def handler(msg):
+
+    uid = msg.chat.id
 
     st = get_state(uid)
 
     state = st['state']
     data = st['data']
 
-    # === TOVAR NOMI ===
+    # ===== USER =====
 
-    if state == 'prod_name':
+    if state == "add_user":
+
+        try:
+
+            new_id = int(msg.text)
+
+        except:
+
+            bot.send_message(uid, "❌ ID noto'g'ri")
+            return
+
+        db = get_db()
+
+        db.execute(
+            "INSERT OR IGNORE INTO users VALUES (?, ?)",
+            (
+                new_id,
+                "Xodim"
+            )
+        )
+
+        db.commit()
+        db.close()
+
+        clear_state(uid)
+
+        bot.send_message(uid, "✅ Odam qo'shildi")
+
+    # ===== PRODUCT NAME =====
+
+    elif state == "product_name":
 
         data['name'] = msg.text
 
-        set_state(uid, 'prod_price', data)
+        set_state(uid, "product_price", data)
 
-        bot.send_message(
-            uid,
-            "💰 Narxini yuboring:"
-        )
+        bot.send_message(uid, "💰 Narxni yuboring:")
 
-    # === TOVAR NARXI ===
+    # ===== PRODUCT PRICE =====
 
-    elif state == 'prod_price':
+    elif state == "product_price":
 
-        try:
-            price = float(msg.text)
+        data['price'] = float(msg.text)
 
-        except:
-            bot.send_message(
-                uid,
-                "❌ Raqam yuboring"
-            )
-            return
+        set_state(uid, "product_click", data)
 
-        data['price'] = price
+        bot.send_message(uid, "💳 Klik raqamini yuboring:")
+
+    # ===== CLICK NUMBER =====
+
+    elif state == "product_click":
+
+        data['click'] = msg.text
+
+        set_state(uid, "product_photo", data)
+
+        bot.send_message(uid, "🖼 Rasm yuboring:")
+
+    # ===== PRODUCT PHOTO =====
+
+    elif state == "product_photo":
+
+        photo = None
+
+        if msg.photo:
+            photo = msg.photo[-1].file_id
 
         db = get_db()
 
@@ -365,19 +426,18 @@ def handle_text(msg):
             (
                 name,
                 total_price,
-                paid_amount,
-                created_at,
-                updated_at,
-                created_by
+                click_number,
+                photo_file_id,
+                created_at
             )
-            VALUES (?, ?, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 data['name'],
                 data['price'],
-                datetime.now().isoformat(),
-                datetime.now().isoformat(),
-                uid
+                data['click'],
+                photo,
+                datetime.now().strftime("%d.%m.%Y %H:%M")
             )
         )
 
@@ -386,44 +446,32 @@ def handle_text(msg):
 
         clear_state(uid)
 
-        bot.send_message(
-            uid,
-            "✅ Tovar qo'shildi",
-            reply_markup=admin_menu()
-        )
+        bot.send_message(uid, "✅ Tovar qo'shildi")
 
-    # === TO'LOV PRODUCT ID ===
+    # ===== PAYMENT =====
 
-    elif state == 'pay_product':
+    elif state == "pay_amount":
 
-        try:
-            product_id = int(msg.text)
+        amount = float(msg.text)
 
-        except:
-            bot.send_message(uid, "❌ ID yuboring")
-            return
+        data['amount'] = amount
 
-        data['product_id'] = product_id
+        set_state(uid, "pay_photo", data)
 
-        set_state(uid, 'pay_amount', data)
+        bot.send_message(uid, "🧾 Chek rasmini yuboring:")
 
-        bot.send_message(
-            uid,
-            "💸 Summa yuboring:"
-        )
+    # ===== PAYMENT PHOTO =====
 
-    # === TO'LOV SUMMA ===
+    elif state == "pay_photo":
 
-    elif state == 'pay_amount':
+        receipt = None
 
-        try:
-            amount = float(msg.text)
-
-        except:
-            bot.send_message(uid, "❌ Raqam yuboring")
-            return
+        if msg.photo:
+            receipt = msg.photo[-1].file_id
 
         product_id = data['product_id']
+
+        amount = data['amount']
 
         db = get_db()
 
@@ -433,40 +481,298 @@ def handle_text(msg):
             SET paid_amount = paid_amount + ?
             WHERE id=?
             """,
-            (amount, product_id)
+            (
+                amount,
+                product_id
+            )
+        )
+
+        db.execute(
+            """
+            INSERT INTO payments
+            (
+                product_id,
+                amount,
+                receipt_file_id,
+                paid_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                product_id,
+                amount,
+                receipt,
+                datetime.now().strftime("%d.%m.%Y %H:%M")
+            )
         )
 
         db.commit()
-
-        prod = db.execute(
-            """
-            SELECT *
-            FROM products
-            WHERE id=?
-            """,
-            (product_id,)
-        ).fetchone()
-
         db.close()
-
-        remain = prod['total_price'] - prod['paid_amount']
 
         clear_state(uid)
 
         bot.send_message(
             uid,
-            f"✅ To'lov qo'shildi\n\n"
-            f"💸 {amount:,.0f} so'm\n"
-            f"🔴 Qolgan: {remain:,.0f} so'm",
-            reply_markup=admin_menu()
+            "✅ To'lov saqlandi"
         )
 
-# ========== MAIN ==========
+# ================= MAIN =================
 
 if __name__ == '__main__':
 
     init_db()
 
-    print("☕ Bot ishga tushdi")
+    print("BOT ISHLADI")
+
+    bot.infinity_polling()
+
+# ================= MENU =================
+
+def menu():
+
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    m.add("➕ Tovar qo'shish")
+    m.add("📦 Tovarlar")
+    m.add("💸 To'lov qilish")
+    m.add("👤 Odam qo'shish")
+    m.add("📊 Statistika")
+
+    return m
+
+# ================= ADMIN =================
+
+ADMIN_ID = 123456789
+
+# ================= TOVARLAR =================
+
+@bot.message_handler(func=lambda m: m.text == "📦 Tovarlar")
+def products(msg):
+
+    db = get_db()
+
+    rows = db.execute(
+        "SELECT * FROM products ORDER BY id DESC"
+    ).fetchall()
+
+    db.close()
+
+    if not rows:
+
+        bot.send_message(msg.chat.id, "📭 Tovar yo'q")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+
+    for r in rows:
+
+        remain = r['total_price'] - r['paid_amount']
+
+        icon = "✅" if remain <= 0 else "🔴"
+
+        markup.add(
+            types.InlineKeyboardButton(
+                f"{icon} {r['name']} | {remain:,.0f} so'm",
+                callback_data=f"view_{r['id']}"
+            )
+        )
+
+    bot.send_message(
+        msg.chat.id,
+        "📦 Tovarni tanlang:",
+        reply_markup=markup
+    )
+
+# ================= VIEW PRODUCT =================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("view_"))
+def view_product(call):
+
+    pid = int(call.data.split("_")[1])
+
+    db = get_db()
+
+    prod = db.execute(
+        "SELECT * FROM products WHERE id=?",
+        (pid,)
+    ).fetchone()
+
+    db.close()
+
+    remain = prod['total_price'] - prod['paid_amount']
+
+    text = (
+        f"📦 {prod['name']}\n\n"
+        f"💰 Jami: {prod['total_price']:,.0f} so'm\n"
+        f"✅ To'langan: {prod['paid_amount']:,.0f} so'm\n"
+        f"🔴 Qarz: {remain:,.0f} so'm\n\n"
+        f"💳 Klik:\n"
+        f"{prod['click_number']}\n\n"
+        f"🕒 {prod['created_at']}"
+    )
+
+    markup = types.InlineKeyboardMarkup()
+
+    markup.add(
+        types.InlineKeyboardButton(
+            "🧾 Cheklar",
+            callback_data=f"checks_{pid}"
+        )
+    )
+
+    if prod['photo_file_id']:
+
+        bot.send_photo(
+            call.message.chat.id,
+            prod['photo_file_id'],
+            caption=text,
+            reply_markup=markup
+        )
+
+    else:
+
+        bot.send_message(
+            call.message.chat.id,
+            text,
+            reply_markup=markup
+        )
+
+# ================= CHEKLAR =================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("checks_"))
+def checks(call):
+
+    pid = int(call.data.split("_")[1])
+
+    db = get_db()
+
+    payments = db.execute(
+        """
+        SELECT *
+        FROM payments
+        WHERE product_id=?
+        ORDER BY id DESC
+        """,
+        (pid,)
+    ).fetchall()
+
+    db.close()
+
+    if not payments:
+
+        bot.send_message(
+            call.message.chat.id,
+            "🧾 Chek yo'q"
+        )
+
+        return
+
+    for p in payments:
+
+        text = (
+            f"💸 {p['amount']:,.0f} so'm\n\n"
+            f"🕒 {p['paid_at']}"
+        )
+
+        if p['receipt_file_id']:
+
+            bot.send_photo(
+                call.message.chat.id,
+                p['receipt_file_id'],
+                caption=text
+            )
+
+        else:
+
+            bot.send_message(
+                call.message.chat.id,
+                text
+            )
+
+# ================= STATISTIKA =================
+
+@bot.message_handler(func=lambda m: m.text == "📊 Statistika")
+def stats(msg):
+
+    db = get_db()
+
+    row = db.execute(
+        """
+        SELECT
+        COUNT(*),
+        SUM(total_price),
+        SUM(paid_amount)
+        FROM products
+        """
+    ).fetchone()
+
+    db.close()
+
+    total_products = row[0] or 0
+    total_sum = row[1] or 0
+    total_paid = row[2] or 0
+    remain = total_sum - total_paid
+
+    text = (
+        f"📊 Statistika\n\n"
+        f"📦 Tovarlar: {total_products}\n\n"
+        f"💰 Jami: {total_sum:,.0f} so'm\n"
+        f"✅ To'langan: {total_paid:,.0f} so'm\n"
+        f"🔴 Qolgan qarz: {remain:,.0f} so'm"
+    )
+
+    bot.send_message(msg.chat.id, text)
+
+# ================= ESLATMA =================
+
+import threading
+import time
+
+def reminder_loop():
+
+    while True:
+
+        db = get_db()
+
+        rows = db.execute(
+            "SELECT * FROM products"
+        ).fetchall()
+
+        for r in rows:
+
+            remain = r['total_price'] - r['paid_amount']
+
+            if remain > 0:
+
+                try:
+
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"🔔 Qarzdor:\n\n"
+                        f"📦 {r['name']}\n"
+                        f"🔴 {remain:,.0f} so'm"
+                    )
+
+                except:
+                    pass
+
+        db.close()
+
+        time.sleep(43200)
+
+# ================= MAIN =================
+
+if __name__ == '__main__':
+
+    init_db()
+
+    t = threading.Thread(
+        target=reminder_loop,
+        daemon=True
+    )
+
+    t.start()
+
+    print("BOT ISHLADI")
 
     bot.infinity_polling()
