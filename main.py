@@ -775,7 +775,7 @@ if __name__ == '__main__':
 
 print("BOT ISHLADI")
 
-    from flask import Flask
+from flask import Flask
 from threading import Thread
 
 app = Flask(__name__)
