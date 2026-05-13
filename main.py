@@ -788,7 +788,7 @@ def run_web():
     app.run(host="0.0.0.0", port=10000)
 
 Thread(target=run_web).start() 
-bot.infinity_polling()
+
 
 
 # ===== TAVARNI TAHRIRLASH =====
@@ -852,4 +852,5 @@ async def edit_product(message: Message):
 
 KeyboardButton(text="✏️ Tavarni tahrirlash")
 
+bot.infinity_polling()
 
