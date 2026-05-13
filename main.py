@@ -274,7 +274,8 @@ def total_debt(msg):
         msg.chat.id,
         text
     )
-    # ======================
+
+# ======================
 # PRODUCT DETAIL
 # ======================
 
@@ -690,3 +691,4 @@ if __name__ == "__main__":
     print("Bot ishladi")
 
     bot.infinity_polling()
+
