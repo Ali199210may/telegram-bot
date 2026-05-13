@@ -776,3 +776,66 @@ if __name__ == '__main__':
     print("BOT ISHLADI")
 
     bot.infinity_polling()
+
+# ===== TAVARNI TAHRIRLASH =====
+
+@dp.message(F.text == "✏️ Tavarni tahrirlash")
+async def edit_product(message: Message):
+    await message.answer("Tavar ID sini yuboring:")
+
+    @dp.message()
+    async def get_product_id(message: Message):
+        product_id = message.text
+
+        if product_id not in products:
+            await message.answer("Tavar topilmadi")
+            return
+
+        await message.answer(
+            "Nimani o‘zgartirmoqchisiz?",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="📷 Rasm")],
+                    [KeyboardButton(text="💰 Narx")],
+                    [KeyboardButton(text="📞 Nomer")],
+                    [KeyboardButton(text="📝 Nomi")]
+                ],
+                resize_keyboard=True
+            )
+        )
+
+        @dp.message(F.text == "💰 Narx")
+        async def edit_price(message: Message):
+            await message.answer("Yangi narxni yuboring:")
+
+            @dp.message()
+            async def new_price(message: Message):
+                products[product_id]["price"] = message.text
+                await message.answer("Narx yangilandi ✅")
+
+        @dp.message(F.text == "📞 Nomer")
+        async def edit_phone(message: Message):
+            await message.answer("Yangi nomerni yuboring:")
+
+            @dp.message()
+            async def new_phone(message: Message):
+                products[product_id]["phone"] = message.text
+                await message.answer("Nomer yangilandi ✅")
+
+        @dp.message(F.text == "📝 Nomi")
+        async def edit_name(message: Message):
+            await message.answer("Yangi nomni yuboring:")
+
+            @dp.message()
+            async def new_name(message: Message):
+                products[product_id]["name"] = message.text
+                await message.answer("Nomi yangilandi ✅")
+
+        @dp.message(F.photo)
+        async def edit_photo(message: Message):
+            products[product_id]["photo"] = message.photo[-1].file_id
+            await message.answer("Rasm yangilandi ✅")
+
+KeyboardButton(text="✏️ Tavarni tahrirlash")
+
+
