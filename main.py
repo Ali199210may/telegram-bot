@@ -18,10 +18,13 @@ WEB_SECRET = os.environ.get("WEB_SECRET", "secret123")
 WEB_PORT = int(os.environ.get("WEB_PORT", 5000))
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "Bot ishlayapti"
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 # ========== DATABASE ==========
 
