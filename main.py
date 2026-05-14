@@ -1796,13 +1796,13 @@ app.run(host=‘0.0.0.0’, port=WEB_PORT, debug=False, use_reloader=False)
 
 # ========== ISHGA TUSHIRISH ==========
 
-if **name** == ‘**main**’:
+if __name__ == '__main__':
 init_db()
 print(“☕ Kafe Nasiya Daftari Bot ishga tushdi!”)
 print(f”🌐 Web dashboard: http://0.0.0.0:{WEB_PORT}”)
 print(f”🔑 Web parol: {WEB_SECRET}”)
 
-```
+
 # Eslatma thread
 t1 = threading.Thread(target=reminder_loop, daemon=True)
 t1.start()
@@ -1812,4 +1812,4 @@ t2 = threading.Thread(target=run_web, daemon=True)
 t2.start()
 
 bot.infinity_polling(timeout=30, long_polling_timeout=20)
-```
+
