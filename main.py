@@ -13,9 +13,9 @@ from flask import Flask, render_template_string, jsonify, request
 
 # ========== SOZLAMALAR ==========
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-WEB_SECRET = os.environ.get("WEB_SECRET", "secret123")
-WEB_PORT = int(os.environ.get("WEB_PORT", 5000))
+BOT_TOKEN = os.environ.get(“BOT_TOKEN”, “YOUR_BOT_TOKEN_HERE”)
+WEB_SECRET = os.environ.get(“WEB_SECRET”, “secret123”)
+WEB_PORT = int(os.environ.get(“WEB_PORT”, 5000))
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(**name**)
@@ -23,13 +23,13 @@ logging.basicConfig(level=logging.INFO, format=’%(asctime)s - %(message)s’)
 
 # ========== DATABASE ==========
 
-DB_PATH = 'cafe_debts.db'
+DB_PATH = ‘cafe_debts.db’
 
 def init_db():
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
 
-'''
+```
 c.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     full_name TEXT,
