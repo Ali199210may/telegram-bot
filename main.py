@@ -1,4 +1,4 @@
-<import os, sqlite3, logging, threading, time, secrets, urllib.request, json
+import os, sqlite3, logging, threading, time, secrets, urllib.request, json
 from datetime import datetime, timedelta
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
@@ -1536,4 +1536,4 @@ init_db()
 print(f”☕ Bot ishga tushdi! Web: http://0.0.0.0:{WEB_PORT}”)
 threading.Thread(target=reminder_loop,daemon=True).start()
 threading.Thread(target=run_web,daemon=True).start()
-bot.infinity_polling(timeout=30,long_polling_timeout=20)i>
+bot.infinity_polling(timeout=30,long_polling_timeout=20)
