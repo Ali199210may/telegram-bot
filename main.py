@@ -53,8 +53,10 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL,
         quantity REAL NOT NULL, note TEXT, added_at TEXT NOT NULL, added_by INTEGER,
         FOREIGN KEY(item_id) REFERENCES sklad_items(id))''')
+    # sklad_permissions endi role ustuniga ega: 'viewer' yoki 'sklad_admin'
     c.execute('''CREATE TABLE IF NOT EXISTS sklad_permissions (
         user_id INTEGER PRIMARY KEY, full_name TEXT,
+        role TEXT DEFAULT 'viewer',
         granted_at TEXT, granted_by INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS sklad_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
@@ -66,6 +68,9 @@ def init_db():
     for col in [("min_alert","REAL DEFAULT 10"),("unit_type","TEXT DEFAULT 'dona'")]:
         try: c.execute(f"ALTER TABLE sklad_items ADD COLUMN {col[0]} {col[1]}")
         except: pass
+    # role ustunini qo'shish (eski bazalar uchun)
+    try: c.execute("ALTER TABLE sklad_permissions ADD COLUMN role TEXT DEFAULT 'viewer'")
+    except: pass
     conn.commit(); conn.close()
 
 def get_db():
@@ -95,11 +100,20 @@ def is_allowed(uid):
     return row is not None
 
 def is_sklad_allowed(uid):
+    """Sklad bo'limini ko'ra oladi (viewer yoki sklad_admin yoki admin)"""
     if is_admin(uid): return True
     db = get_db()
     row = db.execute("SELECT user_id FROM sklad_permissions WHERE user_id=?", (uid,)).fetchone()
     db.close()
     return row is not None
+
+def is_sklad_admin(uid):
+    """Sklad kirim/chiqim qo'sha oladi (sklad_admin yoki admin)"""
+    if is_admin(uid): return True
+    db = get_db()
+    row = db.execute("SELECT role FROM sklad_permissions WHERE user_id=?", (uid,)).fetchone()
+    db.close()
+    return row and row['role'] == 'sklad_admin'
 
 def register_admin(uid, full_name, username):
     db = get_db()
@@ -331,9 +345,6 @@ def web_info(msg):
     bot.send_message(uid,f"🌐 *Web Dashboard*\n\n🔗 `{host}`\n🔑 Parol: `{WEB_SECRET}`",
         parse_mode='Markdown',reply_markup=admin_menu())
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  💵 DOLLAR KURSI
-# ═══════════════════════════════════════════════════════════════════════════════
 @bot.message_handler(func=lambda m: m.text=="💵 Dollar kursi")
 def dollar_kurs(msg):
     uid=msg.from_user.id
@@ -357,9 +368,7 @@ def dollar_kurs(msg):
             f"📡 _Kurs avtomatik yangilanadi_",
             parse_mode='Markdown',reply_markup=get_menu(uid))
     except:
-        bot.send_message(uid,
-            "❌ Kursni olishda xatolik. Internet aloqasini tekshiring.",
-            reply_markup=get_menu(uid))
+        bot.send_message(uid,"❌ Kursni olishda xatolik.",reply_markup=get_menu(uid))
 
 @bot.message_handler(func=lambda m: m.text=="👥 Xodimlar")
 def workers_menu_handler(msg):
@@ -445,13 +454,19 @@ def sklad_main(msg):
 
 def _send_sklad_main(uid):
     m=types.InlineKeyboardMarkup(row_width=1)
+    # Faqat ko'rish (barcha sklad foydalanuvchilari uchun)
     m.add(
         types.InlineKeyboardButton("🔍 Mahsulot qidirish",callback_data="sklad:search"),
-        types.InlineKeyboardButton("📥 Mahsulot kirim",callback_data="sklad:kirim_menu"),
-        types.InlineKeyboardButton("📤 Mahsulot chiqim",callback_data="sklad:chiqim_list"),
         types.InlineKeyboardButton("📋 Barcha mahsulotlar",callback_data="sklad:all_items"),
         types.InlineKeyboardButton("📞 Yetkazuvchi kontaktlar",callback_data="sklad:yetkazuvchilar"),
     )
+    # Kirim/chiqim faqat sklad_admin va admin uchun
+    if is_sklad_admin(uid):
+        m.add(
+            types.InlineKeyboardButton("📥 Mahsulot kirim",callback_data="sklad:kirim_menu"),
+            types.InlineKeyboardButton("📤 Mahsulot chiqim",callback_data="sklad:chiqim_list"),
+        )
+    # Admin panel faqat admin uchun
     if is_admin(uid):
         m.add(types.InlineKeyboardButton("⚙️ Sklad boshqaruvi",callback_data="sklad:admin_panel"))
     bot.send_message(uid,"🏪 *Sklad boshqaruvi*\n\nQuyidagi bo'limlardan birini tanlang:",
@@ -475,34 +490,62 @@ def cb_sklad_request(call):
     bot.send_message(uid,"📩 So'rovingiz adminga yuborildi. Admin ruxsat berganidan so'ng sklad bo'limiga kira olasiz.")
     m=types.InlineKeyboardMarkup()
     m.add(
-        types.InlineKeyboardButton("✅ Ruxsat berish",callback_data=f"sklad_grant:{uid}"),
+        types.InlineKeyboardButton("👁 Faqat ko'rish",callback_data=f"sklad_grant_viewer:{uid}"),
+        types.InlineKeyboardButton("⚙️ Sklad admin",callback_data=f"sklad_grant_admin:{uid}"),
         types.InlineKeyboardButton("❌ Rad etish",callback_data=f"sklad_deny:{uid}")
     )
-    notify_admin(f"📩 *Sklad ruxsati so'rovi*\n\n👤 *{name}*\n{'@'+uname if uname else ''}\n\nSklad bo'limiga kirish ruxsati so'ramoqda.")
     aid=get_admin_id()
     if aid:
-        try: bot.send_message(aid,f"📩 *{name}* sklad ruxsati so'ramoqda:",parse_mode='Markdown',reply_markup=m)
+        try: bot.send_message(aid,
+            f"📩 *{name}* sklad ruxsati so'ramoqda:\n\n"
+            f"👁 *Faqat ko'rish* — mahsulotlarni ko'radi, kirim/chiqim qo'sha olmaydi\n"
+            f"⚙️ *Sklad admin* — kirim/chiqim ham qo'sha oladi",
+            parse_mode='Markdown',reply_markup=m)
         except: pass
+
+def _grant_sklad(uid, target_id, role, call):
+    db=get_db()
+    user=db.execute("SELECT full_name FROM users WHERE user_id=?",(target_id,)).fetchone()
+    name=user['full_name'] if user else str(target_id)
+    existing=db.execute("SELECT user_id FROM sklad_permissions WHERE user_id=?",(target_id,)).fetchone()
+    if existing:
+        db.execute("UPDATE sklad_permissions SET role=?,granted_at=?,granted_by=? WHERE user_id=?",
+                   (role,datetime.now().isoformat(),uid,target_id))
+    else:
+        db.execute("INSERT INTO sklad_permissions(user_id,full_name,role,granted_at,granted_by) VALUES(?,?,?,?,?)",
+                   (target_id,name,role,datetime.now().isoformat(),uid))
+    db.execute("UPDATE sklad_requests SET status='approved' WHERE user_id=?",(target_id,))
+    db.commit(); db.close()
+    role_text="👁 Faqat ko'rish" if role=='viewer' else "⚙️ Sklad admin"
+    bot.answer_callback_query(call.id,f"✅ Ruxsat berildi: {role_text}")
+    bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
+    bot.send_message(uid,f"✅ *{name}* ga sklad ruxsati berildi!\nRol: *{role_text}*",parse_mode='Markdown')
+    msg_text = ("✅ *Sklad bo'limiga ruxsat berildi!*\n\n👁 Siz mahsulotlarni ko'ra olasiz."
+                if role=='viewer' else
+                "✅ *Sklad admin ruxsati berildi!*\n\n⚙️ Siz kirim/chiqim ham qo'sha olasiz.")
+    try: bot.send_message(target_id, msg_text, parse_mode='Markdown')
+    except: pass
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("sklad_grant_viewer:"))
+def cb_sklad_grant_viewer(call):
+    uid=call.from_user.id
+    if not is_admin(uid): bot.answer_callback_query(call.id,"❌ Ruxsat yo'q!"); return
+    target_id=int(call.data.split(":")[1])
+    _grant_sklad(uid, target_id, 'viewer', call)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("sklad_grant_admin:"))
+def cb_sklad_grant_admin(call):
+    uid=call.from_user.id
+    if not is_admin(uid): bot.answer_callback_query(call.id,"❌ Ruxsat yo'q!"); return
+    target_id=int(call.data.split(":")[1])
+    _grant_sklad(uid, target_id, 'sklad_admin', call)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("sklad_grant:"))
 def cb_sklad_grant(call):
     uid=call.from_user.id
     if not is_admin(uid): bot.answer_callback_query(call.id,"❌ Ruxsat yo'q!"); return
     target_id=int(call.data.split(":")[1])
-    db=get_db()
-    user=db.execute("SELECT full_name FROM users WHERE user_id=?",(target_id,)).fetchone()
-    name=user['full_name'] if user else str(target_id)
-    existing=db.execute("SELECT user_id FROM sklad_permissions WHERE user_id=?",(target_id,)).fetchone()
-    if not existing:
-        db.execute("INSERT INTO sklad_permissions(user_id,full_name,granted_at,granted_by) VALUES(?,?,?,?)",
-                   (target_id,name,datetime.now().isoformat(),uid))
-    db.execute("UPDATE sklad_requests SET status='approved' WHERE user_id=?",(target_id,))
-    db.commit(); db.close()
-    bot.answer_callback_query(call.id,"✅ Ruxsat berildi!")
-    bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
-    bot.send_message(uid,f"✅ *{name}* ga sklad ruxsati berildi!",parse_mode='Markdown')
-    try: bot.send_message(target_id,"✅ *Sklad bo'limiga ruxsat berildi!*\n\nEndi 🏪 Sklad tugmasini bosib kira olasiz.",parse_mode='Markdown')
-    except: pass
+    _grant_sklad(uid, target_id, 'viewer', call)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("sklad_deny:"))
 def cb_sklad_deny(call):
@@ -529,11 +572,12 @@ def sklad_callback(call):
         set_state(uid,'sklad_search')
         m=types.InlineKeyboardMarkup()
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:back_main"))
-        bot.send_message(uid,"🔍 *Mahsulot qidirish*\n\nMahsulot nomini kiriting:\n_Misol: kola, un, shakar..._",
+        bot.send_message(uid,"🔍 *Mahsulot qidirish*\n\nMahsulot nomini kiriting:",
             parse_mode='Markdown',reply_markup=m)
 
     elif action=="kirim_menu":
-        if not is_sklad_allowed(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
+        if not is_sklad_admin(uid):
+            bot.send_message(uid,"🔒 Kirim qo'shish uchun sklad admin ruxsati kerak."); return
         m=types.InlineKeyboardMarkup(row_width=1)
         m.add(
             types.InlineKeyboardButton("➕ Yangi mahsulot qo'shish",callback_data="sklad:add_item"),
@@ -542,10 +586,10 @@ def sklad_callback(call):
         bot.send_message(uid,"📥 *Mahsulot kirim*",parse_mode='Markdown',reply_markup=m)
 
     elif action=="add_item":
-        if not is_sklad_allowed(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
+        if not is_sklad_admin(uid):
+            bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         set_state(uid,'sklad_item_name')
-        bot.send_message(uid,"📦 *Yangi mahsulot nomi:*\n_Misol: Un, Shakar, Go'sht..._",
-            parse_mode='Markdown',reply_markup=cancel_kb())
+        bot.send_message(uid,"📦 *Yangi mahsulot nomi:*",parse_mode='Markdown',reply_markup=cancel_kb())
 
     elif action=="add_item_dona":
         st=get_state(uid); data=st['data']; data['unit_type']='dona'; data['unit']='dona'
@@ -564,9 +608,10 @@ def sklad_callback(call):
         bot.send_message(uid,"📷 *Mahsulot rasmi:*\n_(O'tkazish mumkin)_",parse_mode='Markdown',reply_markup=skip_kb())
 
     elif action=="kirim_existing":
-        if not is_sklad_allowed(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
+        if not is_sklad_admin(uid):
+            bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         db=get_db(); items=db.execute("SELECT id,name,quantity,unit FROM sklad_items ORDER BY name").fetchall(); db.close()
-        if not items: bot.send_message(uid,"📭 Hali mahsulot yo'q. Avval yangi mahsulot qo'shing."); return
+        if not items: bot.send_message(uid,"📭 Hali mahsulot yo'q."); return
         m=types.InlineKeyboardMarkup(row_width=1)
         for item in items:
             m.add(types.InlineKeyboardButton(f"📦 {item['name']} | {item['quantity']} {item['unit']}",
@@ -575,6 +620,8 @@ def sklad_callback(call):
         bot.send_message(uid,"📦 *Qaysi mahsulotga kirim?*",parse_mode='Markdown',reply_markup=m)
 
     elif action.startswith("kirim_item:"):
+        if not is_sklad_admin(uid):
+            bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         item_id=int(action.split(":")[1])
         db=get_db(); item=db.execute("SELECT * FROM sklad_items WHERE id=?",(item_id,)).fetchone(); db.close()
         set_state(uid,'sklad_kirim_qty',{'item_id':item_id,'item_name':item['name'],'unit':item['unit']})
@@ -583,14 +630,15 @@ def sklad_callback(call):
             parse_mode='Markdown',reply_markup=cancel_kb())
 
     elif action=="chiqim_list":
-        if not is_sklad_allowed(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
+        if not is_sklad_admin(uid):
+            bot.send_message(uid,"🔒 Chiqim qo'shish uchun sklad admin ruxsati kerak."); return
         db=get_db(); items=db.execute("SELECT id,name,quantity,unit FROM sklad_items WHERE quantity>0 ORDER BY name").fetchall(); db.close()
         if not items: bot.send_message(uid,"📭 Zaxirada mahsulot yo'q."); return
         m=types.InlineKeyboardMarkup(row_width=1)
         for item in items:
             m.add(types.InlineKeyboardButton(f"📦 {item['name']}",callback_data=f"sklad:chiqim_detail:{item['id']}"))
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:back_main"))
-        bot.send_message(uid,"📤 *Qaysi mahsulotdan chiqim?*\n\nMahsulot tanlang:",parse_mode='Markdown',reply_markup=m)
+        bot.send_message(uid,"📤 *Qaysi mahsulotdan chiqim?*",parse_mode='Markdown',reply_markup=m)
 
     elif action.startswith("chiqim_detail:"):
         item_id=int(action.split(":")[1])
@@ -600,9 +648,9 @@ def sklad_callback(call):
               f"📊 Zaxirada: *{item['quantity']} {item['unit']}*\n"
               f"🔔 Ogohlantirish chegarasi: *{item['min_alert']} {item['unit']}*")
         m=types.InlineKeyboardMarkup(row_width=2)
-        if is_sklad_allowed(uid):
+        if is_sklad_admin(uid):
             m.add(
-                types.InlineKeyboardButton("➖ Ayirish (chiqim)",callback_data=f"sklad:chiqim_item:{item_id}"),
+                types.InlineKeyboardButton("➖ Chiqim",callback_data=f"sklad:chiqim_item:{item_id}"),
                 types.InlineKeyboardButton("✏️ Tahrirlash",callback_data=f"sklad:edit_item:{item_id}")
             )
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:chiqim_list"))
@@ -612,6 +660,8 @@ def sklad_callback(call):
             bot.send_message(uid,text,parse_mode='Markdown',reply_markup=m)
 
     elif action.startswith("chiqim_item:"):
+        if not is_sklad_admin(uid):
+            bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         item_id=int(action.split(":")[1])
         db=get_db(); item=db.execute("SELECT * FROM sklad_items WHERE id=?",(item_id,)).fetchone(); db.close()
         set_state(uid,'sklad_chiqim_qty',{'item_id':item_id,'item_name':item['name'],'unit':item['unit'],'current_qty':item['quantity']})
@@ -627,8 +677,7 @@ def sklad_callback(call):
             icon="✅" if item['quantity']>0 else "⚠️"
             m.add(types.InlineKeyboardButton(f"{icon} {item['name']}",callback_data=f"sklad:item_detail:{item['id']}"))
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:back_main"))
-        bot.send_message(uid,"📋 *Barcha mahsulotlar:*\nMahsulot nomiga bosing → batafsil ko'ring",
-            parse_mode='Markdown',reply_markup=m)
+        bot.send_message(uid,"📋 *Barcha mahsulotlar:*",parse_mode='Markdown',reply_markup=m)
 
     elif action.startswith("item_detail:"):
         item_id=int(action.split(":")[1])
@@ -647,18 +696,19 @@ def sklad_callback(call):
                 if c['note']: text+=f"\n📝 {c['note']}"
                 text+="\n\n"
         m=types.InlineKeyboardMarkup(row_width=1)
-        if is_sklad_allowed(uid):
+        if is_sklad_admin(uid):
             m.add(types.InlineKeyboardButton("➕ Kontakt qo'shish",callback_data="sklad:add_contact"))
             m.add(types.InlineKeyboardButton("🗑 Kontakt o'chirish",callback_data="sklad:del_contact"))
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:back_main"))
         bot.send_message(uid,text,parse_mode='Markdown',reply_markup=m)
 
     elif action=="add_contact":
-        if not is_sklad_allowed(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
+        if not is_sklad_admin(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         set_state(uid,'sklad_contact_name')
         bot.send_message(uid,"📞 *Yetkazuvchi to'liq ismi:*",parse_mode='Markdown',reply_markup=cancel_kb())
 
     elif action=="del_contact":
+        if not is_sklad_admin(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         db=get_db(); contacts=db.execute("SELECT id,full_name FROM yetkazuvchilar ORDER BY full_name").fetchall(); db.close()
         if not contacts: bot.send_message(uid,"📭 Kontakt yo'q."); return
         m=types.InlineKeyboardMarkup(row_width=1)
@@ -668,20 +718,25 @@ def sklad_callback(call):
         bot.send_message(uid,"🗑 Qaysi kontaktni o'chirish?",reply_markup=m)
 
     elif action.startswith("delcontact:"):
+        if not is_sklad_admin(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         cid=int(action.split(":")[1]); db=get_db()
         db.execute("DELETE FROM yetkazuvchilar WHERE id=?",(cid,)); db.commit(); db.close()
         bot.send_message(uid,"✅ Kontakt o'chirildi.",reply_markup=get_menu(uid))
 
     elif action=="admin_panel":
         if not is_admin(uid): bot.send_message(uid,"🔒 Faqat admin uchun."); return
-        db=get_db(); perms=db.execute("SELECT user_id,full_name FROM sklad_permissions").fetchall(); db.close()
+        db=get_db(); perms=db.execute("SELECT user_id,full_name,role FROM sklad_permissions").fetchall(); db.close()
         text="⚙️ *Sklad boshqaruvi*\n\n"
         if perms:
-            text+="👷 *Sklad ruxsati berilganlar:*\n"
-            for p in perms: text+=f"  • {p['full_name']}\n"
+            text+="👷 *Sklad foydalanuvchilari:*\n"
+            for p in perms:
+                role_icon="⚙️" if p['role']=='sklad_admin' else "👁"
+                role_name="Sklad admin" if p['role']=='sklad_admin' else "Faqat ko'rish"
+                text+=f"  {role_icon} {p['full_name']} — _{role_name}_\n"
         else: text+="👷 Hali hech kimga ruxsat berilmagan.\n"
         m=types.InlineKeyboardMarkup(row_width=1)
         m.add(types.InlineKeyboardButton("➕ Foydalanuvchiga ruxsat berish",callback_data="sklad:grant_manual"))
+        m.add(types.InlineKeyboardButton("🔄 Rolni o'zgartirish",callback_data="sklad:change_role"))
         m.add(types.InlineKeyboardButton("🗑 Ruxsatni olib tashlash",callback_data="sklad:revoke_perm"))
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:back_main"))
         bot.send_message(uid,text,parse_mode='Markdown',reply_markup=m)
@@ -693,12 +748,52 @@ def sklad_callback(call):
         perms=[p['user_id'] for p in db.execute("SELECT user_id FROM sklad_permissions").fetchall()]
         db.close()
         candidates=[w for w in workers if w['user_id'] not in perms]
-        if not candidates: bot.send_message(uid,"📭 Ruxsat berilmagan xodim yo'q yoki hammaga berilgan."); return
+        if not candidates: bot.send_message(uid,"📭 Ruxsat berilmagan xodim yo'q."); return
         m=types.InlineKeyboardMarkup(row_width=1)
         for w in candidates:
-            m.add(types.InlineKeyboardButton(f"✅ {w['full_name']}",callback_data=f"sklad_grant:{w['user_id']}"))
+            m.add(types.InlineKeyboardButton(f"👤 {w['full_name']}",callback_data=f"sklad:grant_select:{w['user_id']}"))
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:admin_panel"))
         bot.send_message(uid,"👤 Kimga ruxsat berish?",reply_markup=m)
+
+    elif action.startswith("grant_select:"):
+        if not is_admin(uid): return
+        target_id=int(action.split(":")[1])
+        db=get_db(); user=db.execute("SELECT full_name FROM users WHERE user_id=?",(target_id,)).fetchone(); db.close()
+        name=user['full_name'] if user else str(target_id)
+        m=types.InlineKeyboardMarkup(row_width=1)
+        m.add(
+            types.InlineKeyboardButton("👁 Faqat ko'rish",callback_data=f"sklad_grant_viewer:{target_id}"),
+            types.InlineKeyboardButton("⚙️ Sklad admin",callback_data=f"sklad_grant_admin:{target_id}"),
+        )
+        bot.send_message(uid,f"*{name}* uchun rol tanlang:\n\n👁 *Faqat ko'rish* — mahsulotlarni ko'radi\n⚙️ *Sklad admin* — kirim/chiqim ham qo'sha oladi",
+            parse_mode='Markdown',reply_markup=m)
+
+    elif action=="change_role":
+        if not is_admin(uid): return
+        db=get_db(); perms=db.execute("SELECT user_id,full_name,role FROM sklad_permissions").fetchall(); db.close()
+        if not perms: bot.send_message(uid,"📭 Foydalanuvchi yo'q."); return
+        m=types.InlineKeyboardMarkup(row_width=1)
+        for p in perms:
+            role_icon="⚙️" if p['role']=='sklad_admin' else "👁"
+            m.add(types.InlineKeyboardButton(f"{role_icon} {p['full_name']}",callback_data=f"sklad:role_select:{p['user_id']}"))
+        m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:admin_panel"))
+        bot.send_message(uid,"🔄 Kimning rolini o'zgartirish?",reply_markup=m)
+
+    elif action.startswith("role_select:"):
+        if not is_admin(uid): return
+        target_id=int(action.split(":")[1])
+        db=get_db()
+        perm=db.execute("SELECT full_name,role FROM sklad_permissions WHERE user_id=?",(target_id,)).fetchone()
+        db.close()
+        if not perm: bot.send_message(uid,"❌ Topilmadi."); return
+        current="⚙️ Sklad admin" if perm['role']=='sklad_admin' else "👁 Faqat ko'rish"
+        m=types.InlineKeyboardMarkup(row_width=1)
+        m.add(
+            types.InlineKeyboardButton("👁 Faqat ko'rish",callback_data=f"sklad_grant_viewer:{target_id}"),
+            types.InlineKeyboardButton("⚙️ Sklad admin",callback_data=f"sklad_grant_admin:{target_id}"),
+        )
+        bot.send_message(uid,f"*{perm['full_name']}*\nHozirgi rol: *{current}*\n\nYangi rol tanlang:",
+            parse_mode='Markdown',reply_markup=m)
 
     elif action=="revoke_perm":
         if not is_admin(uid): return
@@ -711,13 +806,14 @@ def sklad_callback(call):
         bot.send_message(uid,"🗑 Kimning ruxsatini olib tashlash?",reply_markup=m)
 
     elif action.startswith("revoke_ok:"):
+        if not is_admin(uid): return
         rid=int(action.split(":")[1]); db=get_db()
         db.execute("DELETE FROM sklad_permissions WHERE user_id=?",(rid,)); db.commit(); db.close()
         bot.send_message(uid,"✅ Ruxsat olib tashlandi.",reply_markup=get_menu(uid))
 
     elif action.startswith("edit_item:"):
         item_id=int(action.split(":")[1])
-        if not is_sklad_allowed(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
+        if not is_sklad_admin(uid): bot.send_message(uid,"🔒 Ruxsat yo'q."); return
         m=types.InlineKeyboardMarkup(row_width=2)
         m.add(
             types.InlineKeyboardButton("📝 Nom",callback_data=f"sklad:edititem_name:{item_id}"),
@@ -737,8 +833,7 @@ def sklad_callback(call):
         bot.send_message(uid,"📏 Yangi birlik (dona/kg/litr...):",reply_markup=cancel_kb())
     elif action.startswith("edititem_alert:"):
         set_state(uid,'sklad_edit_alert',{'item_id':int(action.split(":")[1])})
-        bot.send_message(uid,"🔔 Ogohlantirish chegarasini kiriting:\n_Misol: 10 (10 ta/kg qolganda ogohlantiradi)_",
-            parse_mode='Markdown',reply_markup=cancel_kb())
+        bot.send_message(uid,"🔔 Ogohlantirish chegarasini kiriting:",reply_markup=cancel_kb())
     elif action.startswith("edititem_photo:"):
         set_state(uid,'sklad_edit_photo',{'item_id':int(action.split(":")[1])})
         bot.send_message(uid,"📷 Yangi rasm yuboring:",reply_markup=cancel_kb())
@@ -776,7 +871,7 @@ def _show_item_detail(uid, item_id):
         text+="📤 *So'nggi chiqimlar:*\n"
         for c in chiqims: text+=f"  -{c['quantity']} {item['unit']} — {str(c['added_at'])[:16].replace('T',' ')}\n"
     m=types.InlineKeyboardMarkup(row_width=2)
-    if is_sklad_allowed(uid):
+    if is_sklad_admin(uid):
         m.add(types.InlineKeyboardButton("📥 Kirim",callback_data=f"sklad:kirim_item:{item_id}"),
               types.InlineKeyboardButton("📤 Chiqim",callback_data=f"sklad:chiqim_item:{item_id}"))
         m.add(types.InlineKeyboardButton("✏️ Tahrirlash",callback_data=f"sklad:edit_item:{item_id}"))
@@ -878,9 +973,9 @@ def handle_all(msg):
                 f"{icon} {item['name']} | {item['quantity']} {item['unit']}",
                 callback_data=f"sklad:item_detail:{item['id']}"))
         m.add(types.InlineKeyboardButton("🔙 Orqaga",callback_data="sklad:back_main"))
-        bot.send_message(uid,
-            f"🔍 *'{msg.text}'* bo'yicha {len(items)} ta topildi:",
+        bot.send_message(uid,f"🔍 *'{msg.text}'* bo'yicha {len(items)} ta topildi:",
             parse_mode='Markdown',reply_markup=m)
+
     elif state=='add_worker_name':
         wname=(msg.text or '').strip(); wid=data['worker_id']
         db=get_db()
@@ -934,7 +1029,7 @@ def handle_all(msg):
         name=(msg.text or '').strip()
         if len(name)<2: bot.send_message(uid,"⚠️ Ism juda qisqa.",reply_markup=cancel_kb()); return
         data['full_name']=name; set_state(uid,'sklad_contact_phone',data)
-        bot.send_message(uid,f"✅ *{name}*\n\n📱 *Telefon:*\n_Misol: +998901234567_",parse_mode='Markdown',reply_markup=cancel_kb())
+        bot.send_message(uid,f"✅ *{name}*\n\n📱 *Telefon:*",parse_mode='Markdown',reply_markup=cancel_kb())
     elif state=='sklad_contact_phone':
         data['phone']=(msg.text or '').strip(); set_state(uid,'sklad_contact_phone2',data)
         bot.send_message(uid,"📱 *Qo'shimcha telefon:*\n_(O'tkazish mumkin)_",parse_mode='Markdown',reply_markup=skip_kb())
@@ -1002,7 +1097,7 @@ def _save_sklad_item(uid,data):
     db.execute("INSERT INTO sklad_items(name,quantity,unit,unit_type,min_alert,photo_file_id,created_at,updated_at,created_by) VALUES(?,0,?,?,10,?,?,?,?)",
                (data.get('name'),data.get('unit','dona'),data.get('unit_type','dona'),data.get('photo'),now,now,uid))
     db.commit(); db.close(); clear_state(uid)
-    bot.send_message(uid,f"✅ *{data.get('name')}* sklad mahsuloti qo'shildi!\n📏 Birlik: *{data.get('unit','dona')}*\n📊 Boshlang'ich zaxira: *0*",
+    bot.send_message(uid,f"✅ *{data.get('name')}* sklad mahsuloti qo'shildi!\n📏 Birlik: *{data.get('unit','dona')}*",
         parse_mode='Markdown',reply_markup=get_menu(uid))
 
 def _save_sklad_kirim(uid,data):
@@ -1305,64 +1400,35 @@ WEB_HTML = '''<!DOCTYPE html>
 <style>
 :root{--bg:#080c12;--surface:#0f1520;--card:#141c28;--border:#1e2d42;--accent:#f0883e;--accent2:#58a6ff;--green:#3fb950;--red:#f85149;--text:#e6edf3;--muted:#7d8fa8;--radius:16px}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-height:100vh;background-image:radial-gradient(ellipse at 20% 10%,rgba(240,136,62,.08) 0%,transparent 50%),radial-gradient(ellipse at 80% 80%,rgba(88,166,255,.06) 0%,transparent 50%)}
+body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-height:100vh}
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center}
 .login-box{background:var(--card);border:1px solid var(--border);border-radius:24px;padding:48px 40px;width:380px;text-align:center}
 .login-box .logo{font-size:48px;margin-bottom:16px}
 .login-box h1{font-size:22px;font-weight:800;margin-bottom:6px}
 .login-box p{color:var(--muted);font-size:14px;margin-bottom:32px}
-.login-box input{width:100%;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Mono',monospace;font-size:15px;margin-bottom:16px;outline:none;transition:border-color .2s}
-.login-box input:focus{border-color:var(--accent)}
-.btn{width:100%;padding:14px;background:linear-gradient(135deg,var(--accent),#e07020);border:none;border-radius:12px;color:#fff;font-family:'Syne',sans-serif;font-weight:700;font-size:15px;cursor:pointer;transition:opacity .2s}
-.btn:hover{opacity:.9}
-.login-err{color:var(--red);font-size:13px;margin-top:12px}
+.login-box input{width:100%;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Mono',monospace;font-size:15px;margin-bottom:16px;outline:none}
+.btn{width:100%;padding:14px;background:linear-gradient(135deg,var(--accent),#e07020);border:none;border-radius:12px;color:#fff;font-family:'Syne',sans-serif;font-weight:700;font-size:15px;cursor:pointer}
 .dash{display:none}
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 32px;border-bottom:1px solid var(--border);background:rgba(15,21,32,.8);backdrop-filter:blur(12px);position:sticky;top:0;z-index:100}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:20px 32px;border-bottom:1px solid var(--border)}
 .topbar .brand{font-size:18px;font-weight:800}
 .topbar .brand span{color:var(--accent)}
-.logout{background:transparent;border:1px solid var(--border);color:var(--muted);padding:8px 16px;border-radius:8px;font-family:'Syne',sans-serif;font-size:13px;cursor:pointer;transition:all .2s}
-.logout:hover{border-color:var(--red);color:var(--red)}
+.logout{background:transparent;border:1px solid var(--border);color:var(--muted);padding:8px 16px;border-radius:8px;font-family:'Syne',sans-serif;font-size:13px;cursor:pointer}
 .tabs{display:flex;gap:8px;padding:20px 32px 0;border-bottom:1px solid var(--border)}
-.tab-btn{background:transparent;border:none;border-bottom:2px solid transparent;color:var(--muted);padding:10px 16px;font-family:'Syne',sans-serif;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s}
+.tab-btn{background:transparent;border:none;border-bottom:2px solid transparent;color:var(--muted);padding:10px 16px;font-family:'Syne',sans-serif;font-size:14px;font-weight:600;cursor:pointer}
 .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
 .tab-content{display:none}.tab-content.active{display:block}
 .container{max-width:1200px;margin:0 auto;padding:32px 24px}
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:32px}
-.stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;position:relative;overflow:hidden;transition:transform .2s}
-.stat-card:hover{transform:translateY(-3px)}
-.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
-.stat-card.orange::before{background:var(--accent)}.stat-card.blue::before{background:var(--accent2)}.stat-card.green::before{background:var(--green)}.stat-card.red::before{background:var(--red)}
-.stat-label{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px}
-.stat-val{font-size:28px;font-weight:800;line-height:1}
-.stat-val.orange{color:var(--accent)}.stat-val.blue{color:var(--accent2)}.stat-val.green{color:var(--green)}.stat-val.red{color:var(--red)}
-.progress-wrap{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:32px}
-.progress-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-.progress-title{font-size:16px;font-weight:700}
-.progress-pct{font-family:'DM Mono',monospace;color:var(--accent);font-size:20px}
-.progress-bar{height:12px;background:var(--surface);border-radius:99px;overflow:hidden}
-.progress-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--green));transition:width 1s}
-.filters{display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap;align-items:center}
-.filter-btn{background:var(--card);border:1px solid var(--border);color:var(--muted);padding:8px 16px;border-radius:99px;font-family:'Syne',sans-serif;font-size:13px;cursor:pointer;transition:all .2s}
-.filter-btn.active,.filter-btn:hover{border-color:var(--accent);color:var(--accent)}
-.search-box{flex:1;min-width:200px;background:var(--card);border:1px solid var(--border);border-radius:99px;padding:8px 18px;color:var(--text);font-family:'Syne',sans-serif;font-size:14px;outline:none}
-.search-box:focus{border-color:var(--accent2)}
-.table-wrap{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-table{width:100%;border-collapse:collapse}
-thead{background:var(--surface)}
-th{padding:14px 18px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);text-align:left}
-td{padding:16px 18px;font-size:14px;border-top:1px solid var(--border);vertical-align:middle}
-tr:hover td{background:rgba(255,255,255,.02)}
-.badge{display:inline-block;padding:4px 10px;border-radius:99px;font-size:11px;font-weight:700}
-.badge.paid{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.3)}
-.badge.unpaid{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.3)}
-.badge.partial{background:rgba(240,136,62,.15);color:var(--accent);border:1px solid rgba(240,136,62,.3)}
-.mini-bar{height:6px;background:var(--surface);border-radius:99px;min-width:80px;margin-top:6px}
-.mini-fill{height:100%;border-radius:99px}
-.no-data{text-align:center;padding:60px;color:var(--muted);font-size:15px}
-.loader{text-align:center;padding:60px;color:var(--muted)}
-.spin{display:inline-block;width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-@media(max-width:768px){.topbar{padding:14px 16px}.container{padding:16px}.stats-grid{grid-template-columns:1fr 1fr}th,td{padding:10px}}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px}
+.stat-label{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:8px}
+.stat-val{font-size:28px;font-weight:800}
+.stat-val.orange{color:var(--accent)}.stat-val.green{color:var(--green)}.stat-val.red{color:var(--red)}
+.table{width:100%;border-collapse:collapse}
+.table th{text-align:left;padding:12px 16px;font-size:11px;color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border)}
+.table td{padding:14px 16px;border-bottom:1px solid var(--border);font-size:14px}
+.badge{display:inline-block;padding:4px 10px;border-radius:99px;font-size:12px;font-weight:600}
+.badge.green{background:rgba(63,185,80,.15);color:var(--green)}
+.badge.red{background:rgba(248,81,73,.15);color:var(--red)}
 </style>
 </head>
 <body>
@@ -1370,161 +1436,118 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <div class="login-box">
     <div class="logo">☕</div>
     <h1>Kafe Nasiya Daftari</h1>
-    <p>Web Dashboard</p>
-    <input type="password" id="passInput" placeholder="Parol..." onkeydown="if(event.key==='Enter')login()">
-    <button class="btn" onclick="login()">Kirish →</button>
-    <div class="login-err" id="loginErr"></div>
+    <p>Davom etish uchun parol kiriting</p>
+    <input type="password" id="pwdInput" placeholder="Parol..." onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn" onclick="doLogin()">Kirish</button>
+    <div id="loginErr" style="color:#f85149;font-size:13px;margin-top:12px"></div>
   </div>
 </div>
 <div class="dash" id="dash">
-  <div class="topbar"><div class="brand">☕ <span>Nasiya</span> Daftari</div><button class="logout" onclick="logout()">Chiqish</button></div>
+  <div class="topbar">
+    <div class="brand">☕ <span>Kafe</span> Nasiya Daftari</div>
+    <button class="logout" onclick="doLogout()">Chiqish</button>
+  </div>
   <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('nasiya',this)">💳 Nasiya</button>
-    <button class="tab-btn" onclick="switchTab('sklad',this)">🏪 Sklad</button>
-    <button class="tab-btn" onclick="switchTab('contacts',this)">📞 Kontaktlar</button>
+    <button class="tab-btn active" onclick="showTab('products')">📦 Tovarlar</button>
+    <button class="tab-btn" onclick="showTab('sklad')">🏪 Sklad</button>
+    <button class="tab-btn" onclick="showTab('contacts')">📞 Kontaktlar</button>
   </div>
-  <div class="tab-content active" id="tab-nasiya">
+  <div id="tab-products" class="tab-content active">
     <div class="container">
-      <div class="stats-grid">
-        <div class="stat-card orange"><div class="stat-label">Jami tovarlar</div><div class="stat-val orange" id="sCount">—</div></div>
-        <div class="stat-card red"><div class="stat-label">Jami nasiya</div><div class="stat-val red" id="sTotal">—</div></div>
-        <div class="stat-card green"><div class="stat-label">To'langan</div><div class="stat-val green" id="sPaid">—</div></div>
-        <div class="stat-card blue"><div class="stat-label">Qolgan qarz</div><div class="stat-val blue" id="sRem">—</div></div>
-      </div>
-      <div class="progress-wrap">
-        <div class="progress-header"><div class="progress-title">Umumiy to'lov holati</div><div class="progress-pct" id="pPct">0%</div></div>
-        <div class="progress-bar"><div class="progress-fill" id="pFill" style="width:0%"></div></div>
-      </div>
-      <div class="filters">
-        <button class="filter-btn active" onclick="setFilter('all',this)">Hammasi</button>
-        <button class="filter-btn" onclick="setFilter('unpaid',this)">Qarzli</button>
-        <button class="filter-btn" onclick="setFilter('paid',this)">To'langan</button>
-        <input class="search-box" type="text" placeholder="🔍 Qidirish..." id="searchBox" oninput="renderTable()">
-      </div>
-      <div class="table-wrap">
-        <div class="loader" id="loader"><div class="spin"></div></div>
-        <table id="prodTable" style="display:none"><thead><tr><th>#</th><th>Tovar</th><th>Jami</th><th>To'langan</th><th>Qolgan</th><th>Holat</th><th>Muddat</th></tr></thead><tbody id="prodBody"></tbody></table>
-        <div class="no-data" id="noData" style="display:none">📭 Topilmadi</div>
-      </div>
+      <div class="stats-grid" id="statsGrid"></div>
+      <table class="table" id="prodTable">
+        <thead><tr><th>Tovar</th><th>Yetkazuvchi</th><th>Jami</th><th>To'langan</th><th>Qolgan</th><th>Holat</th></tr></thead>
+        <tbody id="prodBody"></tbody>
+      </table>
     </div>
   </div>
-  <div class="tab-content" id="tab-sklad">
+  <div id="tab-sklad" class="tab-content">
     <div class="container">
-      <div class="stats-grid">
-        <div class="stat-card orange"><div class="stat-label">Jami mahsulotlar</div><div class="stat-val orange" id="skCount">—</div></div>
-        <div class="stat-card green"><div class="stat-label">Zaxirada bor</div><div class="stat-val green" id="skIn">—</div></div>
-        <div class="stat-card red"><div class="stat-label">Tugagan</div><div class="stat-val red" id="skOut">—</div></div>
-      </div>
-      <div class="table-wrap">
-        <div class="loader" id="skladLoader"><div class="spin"></div></div>
-        <table id="skladTable" style="display:none"><thead><tr><th>#</th><th>Mahsulot</th><th>Zaxira</th><th>Birlik</th><th>Chegara</th><th>Holat</th></tr></thead><tbody id="skladBody"></tbody></table>
-      </div>
+      <table class="table">
+        <thead><tr><th>Mahsulot</th><th>Zaxira</th><th>Birlik</th><th>Min chegara</th><th>Holat</th></tr></thead>
+        <tbody id="skladBody"></tbody>
+      </table>
     </div>
   </div>
-  <div class="tab-content" id="tab-contacts">
+  <div id="tab-contacts" class="tab-content">
     <div class="container">
-      <div class="table-wrap">
-        <div class="loader" id="contactsLoader"><div class="spin"></div></div>
-        <table id="contactsTable" style="display:none"><thead><tr><th>#</th><th>Ism</th><th>Telefon</th><th>Qo'shimcha</th><th>Kompaniya</th><th>Izoh</th></tr></thead><tbody id="contactsBody"></tbody></table>
-        <div class="no-data" id="noContacts" style="display:none">📭 Kontakt yo'q</div>
-      </div>
+      <table class="table">
+        <thead><tr><th>Ism</th><th>Telefon</th><th>Kompaniya</th><th>Izoh</th></tr></thead>
+        <tbody id="contactsBody"></tbody>
+      </table>
     </div>
   </div>
 </div>
 <script>
-let token=sessionStorage.getItem('wt')||'',products=[],filter='all';
-const fmt=n=>Number(n).toLocaleString('uz')+" so'm";
-const fmtS=n=>n>=1e9?(n/1e9).toFixed(1)+' mlrd':n>=1e6?(n/1e6).toFixed(1)+' mln':Number(n).toLocaleString('uz');
-async function login(){
-  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('passInput').value})});
+let token='';
+async function doLogin(){
+  const pwd=document.getElementById('pwdInput').value;
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})});
   const d=await r.json();
-  if(d.ok){token=d.token;sessionStorage.setItem('wt',token);showDash();}
-  else document.getElementById('loginErr').textContent="❌ Parol noto'g'ri!";
+  if(d.ok){token=d.token;document.getElementById('loginWrap').style.display='none';document.getElementById('dash').style.display='block';loadAll();}
+  else{document.getElementById('loginErr').textContent='Noto\'g\'ri parol!';}
 }
-function logout(){token='';sessionStorage.removeItem('wt');document.getElementById('loginWrap').style.display='flex';document.getElementById('dash').style.display='none';}
-async function showDash(){document.getElementById('loginWrap').style.display='none';document.getElementById('dash').style.display='block';await loadData();}
-async function loadData(){
-  const r=await fetch('/api/products',{headers:{'X-Token':token}});
-  if(r.status===401){logout();return;}
-  const d=await r.json();products=d.products||[];renderStats();renderTable();
-  document.getElementById('loader').style.display='none';document.getElementById('prodTable').style.display='table';
-}
-async function loadSklad(){
-  const r=await fetch('/api/sklad',{headers:{'X-Token':token}});const d=await r.json();const items=d.items||[];
-  document.getElementById('skCount').textContent=items.length+' ta';
-  document.getElementById('skIn').textContent=items.filter(i=>i.quantity>0).length+' ta';
-  document.getElementById('skOut').textContent=items.filter(i=>i.quantity<=0).length+' ta';
-  document.getElementById('skladBody').innerHTML=items.map((item,i)=>`<tr>
-    <td style="color:var(--muted)">${i+1}</td>
-    <td><b>${item.name}</b></td>
-    <td style="font-family:'DM Mono',monospace;color:var(--green)">${item.quantity}</td>
-    <td style="color:var(--muted)">${item.unit}</td>
-    <td style="font-family:'DM Mono',monospace;color:var(--muted)">${item.min_alert}</td>
-    <td>${item.quantity>0?'<span class="badge paid">✅ Bor</span>':'<span class="badge unpaid">⚠️ Tugagan</span>'}</td>
-  </tr>`).join('');
-  document.getElementById('skladLoader').style.display='none';document.getElementById('skladTable').style.display='table';
-}
-async function loadContacts(){
-  const r=await fetch('/api/contacts',{headers:{'X-Token':token}});const d=await r.json();const contacts=d.contacts||[];
-  if(!contacts.length){document.getElementById('contactsLoader').style.display='none';document.getElementById('noContacts').style.display='block';return;}
-  document.getElementById('contactsBody').innerHTML=contacts.map((c,i)=>`<tr>
-    <td style="color:var(--muted)">${i+1}</td><td><b>${c.full_name}</b></td>
-    <td style="font-family:'DM Mono',monospace">${c.phone||'—'}</td>
-    <td style="font-family:'DM Mono',monospace;color:var(--muted)">${c.extra_phone||'—'}</td>
-    <td>${c.company||'—'}</td><td style="color:var(--muted)">${c.note||'—'}</td>
-  </tr>`).join('');
-  document.getElementById('contactsLoader').style.display='none';document.getElementById('contactsTable').style.display='table';
-}
-function switchTab(tab,btn){
-  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+function doLogout(){token='';location.reload();}
+function showTab(name){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-  btn.classList.add('active');document.getElementById('tab-'+tab).classList.add('active');
-  if(tab==='sklad')loadSklad();if(tab==='contacts')loadContacts();
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.target.classList.add('active');
 }
-function renderStats(){
-  const total=products.reduce((s,p)=>s+p.total_price,0),paid=products.reduce((s,p)=>s+p.paid_amount,0);
-  const pct=total>0?Math.min(paid/total*100,100):0;
-  document.getElementById('sCount').textContent=products.length+' ta';
-  document.getElementById('sTotal').textContent=fmtS(total);
-  document.getElementById('sPaid').textContent=fmtS(paid);
-  document.getElementById('sRem').textContent=fmtS(total-paid);
-  document.getElementById('pPct').textContent=pct.toFixed(1)+'%';
-  setTimeout(()=>document.getElementById('pFill').style.width=pct+'%',100);
-}
-function setFilter(f,btn){filter=f;document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderTable();}
-function renderTable(){
-  const q=document.getElementById('searchBox').value.toLowerCase();
-  const rows=products.filter(p=>{
-    const rem=p.total_price-p.paid_amount;
-    if(filter==='paid'&&rem>0)return false;if(filter==='unpaid'&&rem<=0)return false;
-    if(q&&!p.name.toLowerCase().includes(q)&&!(p.supplier_name||'').toLowerCase().includes(q))return false;
-    return true;
-  });
-  if(!rows.length){document.getElementById('prodTable').style.display='none';document.getElementById('noData').style.display='block';return;}
-  document.getElementById('prodTable').style.display='table';document.getElementById('noData').style.display='none';
-  document.getElementById('prodBody').innerHTML=rows.map((p,i)=>{
-    const rem=p.total_price-p.paid_amount,pct=p.total_price>0?Math.min(p.paid_amount/p.total_price*100,100):0;
-    const bc=pct>=90?'#3fb950':pct>=50?'#f0883e':'#f85149';
-    const badge=rem<=0?'<span class="badge paid">\'liq</span>':pct>0?'<span class="badge partial">⚠️ Qisman</span>':'<span class="badge unpaid">🔴 To\'lanmagan</span>';
-    return`<tr><td style="color:var(--muted)">${i+1}</td>
-      <td><b>${p.name}</b>${p.supplier_name?`<div style="color:var(--muted);font-size:12px">🏪 ${p.supplier_name}</div>`:''}</td>
-      <td style="font-family:'DM Mono',monospace">${fmt(p.total_price)}</td>
-      <td style="font-family:'DM Mono',monospace;color:var(--green)">${fmt(p.paid_amount)}</td>
-      <td style="font-family:'DM Mono',monospace;color:${rem>0?'var(--red)':'var(--green)'}">${rem>0?fmt(rem):'—'}</td>
-      <td>${badge}<div class="mini-bar"><div class="mini-fill" style="width:${pct}%;background:${bc}"></div></div></td>
-      <td style="color:var(--muted)">${p.due_date?p.due_date.slice(0,10):'—'}</td></tr>`;
+function fmt(n){return Number(n).toLocaleString('uz-UZ');}
+async function loadAll(){
+  const h={'X-Token':token};
+  const [pr,sk,ct]=await Promise.all([
+    fetch('/api/products',{headers:h}).then(r=>r.json()),
+    fetch('/api/sklad',{headers:h}).then(r=>r.json()),
+    fetch('/api/contacts',{headers:h}).then(r=>r.json())
+  ]);
+  // Stats
+  let total=0,paid=0,rem=0;
+  (pr.products||[]).forEach(p=>{total+=p.total_price;paid+=p.paid_amount;rem+=(p.total_price-p.paid_amount);});
+  document.getElementById('statsGrid').innerHTML=`
+    <div class="stat-card"><div class="stat-label">Jami nasiya</div><div class="stat-val orange">${fmt(total)} so'm</div></div>
+    <div class="stat-card"><div class="stat-label">To'langan</div><div class="stat-val green">${fmt(paid)} so'm</div></div>
+    <div class="stat-card"><div class="stat-label">Qolgan qarz</div><div class="stat-val red">${fmt(rem)} so'm</div></div>
+    <div class="stat-card"><div class="stat-label">Tovarlar soni</div><div class="stat-val">${(pr.products||[]).length} ta</div></div>
+  `;
+  // Products
+  document.getElementById('prodBody').innerHTML=(pr.products||[]).map(p=>{
+    const r=p.total_price-p.paid_amount;
+    return `<tr>
+      <td><b>${p.name}</b>${p.note?'<br><small style="color:var(--muted)">'+p.note+'</small>':''}</td>
+      <td>${p.supplier_name||'—'}</td>
+      <td>${fmt(p.total_price)} so'm</td>
+      <td style="color:var(--green)">${fmt(p.paid_amount)} so'm</td>
+      <td style="color:var(--red)">${fmt(r)} so'm</td>
+      <td><span class="badge ${r<=0?'green':'red'}">${r<=0?"To'liq":'Qarz bor'}</span></td>
+    </tr>`;
   }).join('');
+  // Sklad
+  document.getElementById('skladBody').innerHTML=(sk.items||[]).map(i=>`<tr>
+    <td><b>${i.name}</b></td>
+    <td>${i.quantity}</td>
+    <td>${i.unit}</td>
+    <td>${i.min_alert}</td>
+    <td><span class="badge ${i.quantity>i.min_alert?'green':'red'}">${i.quantity>i.min_alert?'Yetarli':'Kam'}</span></td>
+  </tr>`).join('');
+  // Contacts
+  document.getElementById('contactsBody').innerHTML=(ct.contacts||[]).map(c=>`<tr>
+    <td><b>${c.full_name}</b></td>
+    <td>${c.phone||'—'}${c.extra_phone?' | '+c.extra_phone:''}</td>
+    <td>${c.company||'—'}</td>
+    <td>${c.note||'—'}</td>
+  </tr>`).join('');
 }
-if(token)showDash();
 </script>
 </body>
 </html>'''
 
 def run_web(): app.run(host='0.0.0.0',port=WEB_PORT,debug=False,use_reloader=False)
 
-if __name__=='__main__':
+if __name__ == '__main__':
     init_db()
-    print(f"☕ Bot ishga tushdi! Web: http://0.0.0.0:{WEB_PORT}")
+    print(f"🤖Bot ishga tushdi! Web: http://0.0.0.0:{WEB_PORT}")
     threading.Thread(target=reminder_loop,daemon=True).start()
     threading.Thread(target=run_web,daemon=True).start()
     bot.infinity_polling(timeout=30,long_polling_timeout=20)
