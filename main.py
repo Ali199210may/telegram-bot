@@ -1,4 +1,5 @@
-import os, logging, threading, time, secrets, urllib.request, json from psycopg2 import pool
+import os, logging, threading, time, secrets, urllib.request, json 
+from psycopg2 import pool
 from datetime import datetime, timedelta
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
