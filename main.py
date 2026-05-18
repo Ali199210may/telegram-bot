@@ -1,4 +1,4 @@
-import os, logging, threading, time, secrets, urllib.request, json
+import os, logging, threading, time, secrets, urllib.request, json from psycopg2 import pool
 from datetime import datetime, timedelta
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
@@ -17,7 +17,26 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
+# MA'LUMOTLAR BAZASI UCHUN "HOVUZ" (POOL) YARATAMIZ
+db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, DATABASE_URL, cursor_factory=RealDictCursor)
+
+class PooledConnection:
+    def __init__(self):
+        self.conn = db_pool.getconn()
+        
+    def cursor(self, *args, **kwargs):
+        return self.conn.cursor(*args, **kwargs)
+        
+    def commit(self):
+        self.conn.commit()
+        
+    def close(self):
+        # Eng muhim joyi: endi db.close() qilinganda ulanish uzilmaydi, 
+        # shunchaki hovuzga qaytarib qo'yiladi va soniyaning mingdan bir qismida ishlaydi.
+        db_pool.putconn(self.conn)
+
 def get_db():
+    return PooledConnection()
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def init_db():
